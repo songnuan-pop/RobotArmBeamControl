@@ -1,0 +1,803 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Beam-Control Loop Simulator</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Layout: instrument-panel workbench. Scene + time series on the left, controls and readout on the right, batch test below. */
+  :root {
+    --bg: #E9EDF0;
+    --surface: #F8FAFB;
+    --ink: #15202B;
+    --muted: #55626E;
+    --line: #D0D8DF;
+    --accent: #2F4BC0;
+    --accent-ink: #FFFFFF;
+    --rf: #0B7A8A;
+    --ac: #B86E00;
+    --obs: #C0392B;
+    --tgt: #3556C8;
+    --ok: #1E7F4F;
+    --grip: #15202B;
+    --font: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0D1318; --surface: #151C23; --ink: #E6ECF1; --muted: #93A1AD; --line: #27313A;
+      --accent: #7E97FF; --accent-ink: #0D1318; --rf: #3FC1D1; --ac: #F0A63A; --obs: #F2675A;
+      --tgt: #7E97FF; --ok: #4CC38A; --grip: #E6ECF1; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0D1318; --surface: #151C23; --ink: #E6ECF1; --muted: #93A1AD; --line: #27313A;
+    --accent: #7E97FF; --accent-ink: #0D1318; --rf: #3FC1D1; --ac: #F0A63A; --obs: #F2675A;
+    --tgt: #7E97FF; --ok: #4CC38A; --grip: #E6ECF1; color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--ink); font-family: var(--font); font-size: 14px; line-height: 1.55;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 20px 40px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+  h1 { font-size: 22px; line-height: 1.25; margin: 0; font-weight: 600; letter-spacing: 0.01em; text-wrap: balance; }
+  h2 { font-size: 14px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+  p { margin: 0; }
+  .sub { color: var(--muted); max-width: 70ch; margin-top: 6px; }
+  .main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; align-items: start; }
+  @media (max-width: 920px) { .main { grid-template-columns: minmax(0, 1fr); } }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px; min-width: 0; }
+  .panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .meta { color: var(--muted); font-size: 12px; }
+  canvas { display: block; width: 100%; }
+  #scene { aspect-ratio: 2 / 1.2; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .chip { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+  .chip.ring { background: transparent; border: 1.5px dashed currentColor; }
+  .chip.dot { background: transparent; border: 1.5px dotted currentColor; }
+  .charts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 760px) { .charts { grid-template-columns: minmax(0, 1fr); } }
+  .chart-box h2 { font-size: 13px; }
+  .chart-box .meta { margin: 2px 0 6px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .chart-box .meta span { display: inline-flex; align-items: center; gap: 5px; }
+  .chart-box canvas { height: 128px; }
+  .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .seg button {
+    font: inherit; font-size: 13px; padding: 8px 6px; border-radius: 4px; border: 1px solid var(--line);
+    background: transparent; color: var(--ink); cursor: pointer; min-height: 38px;
+  }
+  .seg button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 500; }
+  button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .desc { color: var(--muted); font-size: 12.5px; margin-top: 10px; min-height: 4.6em; }
+  .field { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; margin-top: 14px; }
+  .field label { font-size: 13px; }
+  .field output { font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .field input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); margin: 4px 0 0; }
+  .btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .btn {
+    font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 4px; border: 1px solid var(--line);
+    background: transparent; color: var(--ink); cursor: pointer; min-height: 36px;
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 500; }
+  .btn:disabled { opacity: 0.55; cursor: progress; }
+  dl.read { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; margin: 0; font-size: 13px; }
+  dl.read dt { color: var(--muted); }
+  dl.read dd { margin: 0; font-family: var(--mono); font-size: 12.5px; text-align: right; font-variant-numeric: tabular-nums; }
+  .st-grasp { color: var(--ok); } .st-collision { color: var(--obs); } .st-timeout { color: var(--muted); }
+  .tally { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 600px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { font-weight: 500; color: var(--muted); font-size: 12px; }
+  td.num { font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .bar { display: flex; align-items: center; gap: 8px; min-width: 190px; }
+  .bar i { display: block; height: 8px; background: var(--obs); border-radius: 1px; min-width: 2px; }
+  .batch-row { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+  .batch-row select { font: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); min-height: 36px; }
+  .verdict { margin-top: 12px; font-size: 13px; max-width: 80ch; }
+  .verdict:empty { display: none; }
+  details { padding-top: 2px; }
+  summary { cursor: pointer; font-weight: 500; font-size: 13.5px; }
+  .model { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 28px; margin-top: 12px; }
+  @media (max-width: 760px) { .model { grid-template-columns: minmax(0, 1fr); } }
+  .model h3 { font-size: 13px; margin: 0 0 4px; font-weight: 600; }
+  .model p, .model li { font-size: 13px; color: var(--muted); }
+  .model ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+  code, .f { font-family: var(--mono); font-size: 12px; color: var(--ink); overflow-wrap: anywhere; }
+  .f { display: block; padding: 6px 8px; margin: 6px 0; background: var(--bg); border-radius: 4px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Beam-Control Loop Simulator</h1>
+    <p class="sub">A robot arm senses a target and one moving obstacle with RF and acoustic beams. Each control cycle it allocates beam power, estimates the state, then decides its motion. Switch policies to see how power allocation, estimation uncertainty and safety margin change.</p>
+  </header>
+
+  <div class="main">
+    <div class="col">
+      <section class="panel" aria-label="Simulation scene">
+        <div class="panel-head">
+          <h2>Workbench, top view</h2>
+          <span class="meta">2.0 m × 1.2 m, one step per 0.05 s</span>
+        </div>
+        <canvas id="scene" role="img" aria-label="Top-view animation of the arm, target, obstacle and beams"></canvas>
+        <div class="legend">
+          <span><i class="chip" style="background:var(--grip)"></i>Arm</span>
+          <span><i class="chip" style="background:var(--tgt)"></i>Target</span>
+          <span><i class="chip" style="background:var(--obs)"></i>Obstacle</span>
+          <span style="color:var(--rf)"><i class="chip" style="background:var(--rf)"></i>RF beam (wide, long range)</span>
+          <span style="color:var(--ac)"><i class="chip" style="background:var(--ac)"></i>Acoustic beam (narrow, near field)</span>
+          <span><i class="chip ring"></i>Uncertainty radius zσ of the estimate</span>
+          <span><i class="chip dot"></i>Safety distance</span>
+        </div>
+      </section>
+
+      <section class="panel" aria-label="Time series">
+        <div class="charts">
+          <div class="chart-box">
+            <h2>Power allocation</h2>
+            <div class="meta">
+              <span><i class="chip" style="background:var(--tgt)"></i>Share to target</span>
+              <span><i class="chip" style="background:var(--rf)"></i>RF share</span>
+            </div>
+            <canvas id="c1"></canvas>
+          </div>
+          <div class="chart-box">
+            <h2>Estimate uncertainty (1σ, cm)</h2>
+            <div class="meta">
+              <span><i class="chip" style="background:var(--tgt)"></i>Target</span>
+              <span><i class="chip" style="background:var(--obs)"></i>Obstacle</span>
+            </div>
+            <canvas id="c2"></canvas>
+          </div>
+          <div class="chart-box">
+            <h2>Obstacle safety margin (cm)</h2>
+            <div class="meta">
+              <span><i class="chip" style="background:var(--ink)"></i>True distance − d_safe</span>
+              <span><i class="chip" style="background:var(--obs)"></i>zσ</span>
+            </div>
+            <canvas id="c3"></canvas>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="panel" aria-label="Controls">
+        <div class="panel-head"><h2>Beam policy</h2></div>
+        <div class="seg" id="policy">
+          <button type="button" data-p="task" aria-pressed="true">Task-oriented</button>
+          <button type="button" data-p="trace" aria-pressed="false">Min trace</button>
+          <button type="button" data-p="uniform" aria-pressed="false">Uniform</button>
+          <button type="button" data-p="target" aria-pressed="false">Target only</button>
+        </div>
+        <p class="desc" id="pdesc"></p>
+
+        <div class="field"><label for="sP">Total sensing power</label><output id="oP"></output>
+          <input type="range" id="sP" min="0.1" max="1" step="0.05" value="0.3"></div>
+        <div class="field"><label for="sV">Obstacle speed</label><output id="oV"></output>
+          <input type="range" id="sV" min="0.5" max="1.8" step="0.05" value="1.25"></div>
+        <div class="field"><label for="sE">Collision risk limit ε</label><output id="oE"></output>
+          <input type="range" id="sE" min="0.01" max="0.2" step="0.01" value="0.05"></div>
+        <div class="field"><label for="sD">Safety distance d_safe</label><output id="oD"></output>
+          <input type="range" id="sD" min="15" max="35" step="1" value="22"></div>
+
+        <div class="btns">
+          <button type="button" class="btn primary" id="bPlay">Pause</button>
+          <button type="button" class="btn" id="bStep">Step</button>
+          <button type="button" class="btn" id="bNew">New run</button>
+          <button type="button" class="btn" id="bSpeed">Speed 1×</button>
+        </div>
+      </section>
+
+      <section class="panel" aria-label="Live readout">
+        <div class="panel-head"><h2>Live readout</h2></div>
+        <dl class="read" aria-live="off">
+          <dt>Status</dt><dd id="rS" aria-live="polite">—</dd>
+          <dt>Time</dt><dd id="rT">—</dd>
+          <dt>Power to target s</dt><dd id="rs">—</dd>
+          <dt>RF share ρ</dt><dd id="rr">—</dd>
+          <dt>Target σ</dt><dd id="rsT">—</dd>
+          <dt>Obstacle σ</dt><dd id="rsO">—</dd>
+          <dt>Obstacle distance</dt><dd id="rdO">—</dd>
+          <dt>Target distance</dt><dd id="rdT">—</dd>
+        </dl>
+        <p class="tally" id="tally"></p>
+      </section>
+    </div>
+  </div>
+
+  <section class="panel" aria-label="Batch comparison">
+    <div class="panel-head">
+      <h2>Batch comparison: the same random scenarios, run once per policy</h2>
+      <span class="meta">Uses the power, speed, ε and safety distance set above</span>
+    </div>
+    <div class="batch-row">
+      <label for="nBatch">Runs per policy</label>
+      <select id="nBatch"><option value="100">100</option><option value="200">200</option><option value="400" selected>400</option></select>
+      <button type="button" class="btn primary" id="bBatch">Run comparison</button>
+      <span class="meta" id="bProg"></span>
+    </div>
+    <div class="scroll" style="margin-top:12px">
+      <table>
+        <thead><tr><th>Policy</th><th>Grasp success</th><th>Collision rate (95% interval)</th><th>Mean time</th><th>Mean obstacle σ</th></tr></thead>
+        <tbody id="bBody"><tr><td colspan="5" class="meta">Click "Run comparison" to generate results.</td></tr></tbody>
+      </table>
+    </div>
+    <p class="verdict" id="verdict"></p>
+  </section>
+
+  <section class="panel">
+    <details>
+      <summary>How the model is built, and what it simplifies</summary>
+      <div class="model">
+        <div>
+          <h3>Three steps per control cycle</h3>
+          <ul>
+            <li>Target and obstacle each use a [position, velocity] constant-velocity model. The arm's own position is treated as known. The x and y axes share one covariance P.</li>
+            <li>Enumerate 11×6 pairs (s, ρ): s is the share of power given to the target, ρ is the RF share between the two modalities. For each pair, compute the one-step posterior covariance.</li>
+            <li>Pick the pair with the lowest cost under the chosen policy, update the estimates with noisy measurements, then drive avoidance and grasping from the estimates.</li>
+          </ul>
+          <span class="f">P⁻¹_post = P⁻¹_pred + diag(i_pos, i_vel)</span>
+          <p>RF position accuracy degrades with range, but RF also measures Doppler velocity. Acoustic works only within about 0.3 m, with fine position accuracy.</p>
+        </div>
+        <div>
+          <h3>Task-oriented cost</h3>
+          <span class="f">c(s,ρ) = Σ_e w_e·(P_pos + ¼P_vel) + 400·max(0, zσ_O − (d̂_O − d_safe))²</span>
+          <p>w_e varies with the arm-to-target distance and with how close the obstacle is to the safety boundary. The last term is the penalty form of the chance constraint, and z is set by ε.</p>
+          <h3 style="margin-top:12px">Simplifications versus the original derivation</h3>
+          <ul>
+            <li>Two scalars (s, ρ) replace the complex beam weights, so there is no constant-modulus constraint.</li>
+            <li>w_e is a hand-designed weight, not the M_t from the LQG Riccati recursion.</li>
+            <li>The chance constraint is a penalty term, and each step looks only one step ahead instead of optimizing over T steps.</li>
+            <li>The controller is a potential-field method, not LQG.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+  </section>
+</div>
+
+<script>
+/* Toy model core: beam allocation + Kalman estimation + avoidance/grasp control.
+   Per axis state [position, velocity]; covariance shared by x and y (isotropic). */
+(function (root) {
+  const DT = 0.05;
+  const W = 2.0, H = 1.2;
+
+  function rng(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function gauss(r) {
+    let u = 0; while (u === 0) u = r();
+    const v = r();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+  // upper-tail normal quantile, Abramowitz-Stegun 26.2.23
+  function zq(eps) {
+    const t = Math.sqrt(-2 * Math.log(eps));
+    return t - (2.515517 + 0.802853 * t + 0.010328 * t * t) /
+      (1 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t);
+  }
+
+  // symmetric 2x2 as {a,b,c} = [[a,b],[b,c]]
+  function inv2(P) { const d = P.a * P.c - P.b * P.b; return { a: P.c / d, b: -P.b / d, c: P.a / d }; }
+  function predictCov(P, qa) {
+    const d = DT;
+    const a = P.a + 2 * d * P.b + d * d * P.c + qa * qa * Math.pow(d, 4) / 4;
+    const b = P.b + d * P.c + qa * qa * Math.pow(d, 3) / 2;
+    const c = P.c + qa * qa * d * d;
+    return { a, b, c };
+  }
+  function postCov(P, ip, iv) {
+    const I = inv2(P);
+    return inv2({ a: I.a + ip, b: I.b, c: I.c + iv });
+  }
+
+  // Information delivered by (RF share rho, acoustic share 1-rho) at a given range with power p.
+  function info(range, p, rho) {
+    const prf = p * rho, pac = p * (1 - rho);
+    const near = Math.exp(-Math.pow(range / 0.3, 2));          // acoustic is near-field only
+    const ip = prf / (0.12 * 0.12 * (1 + Math.pow(range / 1.0, 2))) + pac * near / (0.012 * 0.012);
+    const iv = prf / (0.2 * 0.2) + pac * near / (0.25 * 0.25); // RF Doppler gives velocity
+    return [ip, iv];
+  }
+
+  const FLOOR = 0.04;
+  function powers(s, Ptot) {
+    return [Ptot * (FLOOR + (1 - 2 * FLOOR) * s), Ptot * (FLOOR + (1 - 2 * FLOOR) * (1 - s))];
+  }
+
+  const DEFAULTS = {
+    policy: 'task', Ptot: 0.3, eps: 0.05, obsSpeed: 1.25, wOb: 100, wOs: 0.6, dSafe: 0.22, dCol: 0.10, maxT: 25
+  };
+
+  function makeEpisode(cfg, seed) {
+    const r = rng(seed);
+    const T0 = { x: 1.45 + 0.3 * r(), y: 0.5 + 0.45 * r() };
+    const ang = r() * 2 * Math.PI;
+    const tv = { x: 0.05 * Math.cos(ang), y: 0.05 * Math.sin(ang) };
+    const ob = {
+      cx: 0.8 + 0.15 * r(), cy: 0.55, ax: 0.3, ay: 0.42,
+      wx: 0.9 + 0.2 * r(), wy: 0.7 + 0.2 * r(),
+      px: 2 * Math.PI * r(), py: 2 * Math.PI * r()
+    };
+    const ep = {
+      cfg, r, t: 0, done: null, steps: 0,
+      q: { x: 0.2, y: 0.15 }, v: { x: 0, y: 0 },
+      T: { x: T0.x, y: T0.y, vx: tv.x, vy: tv.y }, ob,
+      O: { x: 0, y: 0, vx: 0, vy: 0 },
+      eT: { x: T0.x + 0.25 * gauss(r), y: T0.y + 0.25 * gauss(r), vx: 0, vy: 0 },
+      eO: { x: 1.0, y: 0.6, vx: 0, vy: 0 },
+      PT: { a: 0.3 * 0.3, b: 0, c: 0.1 * 0.1 },
+      PO: { a: 0.4 * 0.4, b: 0, c: 0.3 * 0.3 },
+      beam: { s: 0.5, rho: 0.5 }, hist: [],
+      minDist: 9, sumSigO: 0, sumSigT: 0, n: 0
+    };
+    obstacleAt(ep, 0);
+    return ep;
+  }
+
+  function obstacleAt(ep, t) {
+    const o = ep.ob, k = ep.cfg.obsSpeed, tt = t * k;
+    ep.O.x = o.cx + o.ax * Math.cos(o.wx * tt + o.px);
+    ep.O.y = o.cy + o.ay * Math.sin(o.wy * tt + o.py);
+    ep.O.vx = -o.ax * o.wx * k * Math.sin(o.wx * tt + o.px);
+    ep.O.vy = o.ay * o.wy * k * Math.cos(o.wy * tt + o.py);
+  }
+
+  function chooseBeam(ep, PTp, POp) {
+    const cfg = ep.cfg, q = ep.q;
+    if (cfg.policy === 'uniform') return { s: 0.5, rho: 0.5 };
+    if (cfg.policy === 'target') return { s: 1, rho: 0.5 };
+    const rT = Math.hypot(ep.eT.x - q.x, ep.eT.y - q.y);
+    const rO = Math.hypot(ep.eO.x - q.x, ep.eO.y - q.y);
+    const z = zq(cfg.eps);
+    const wT = 150 * (1 + 3 * Math.exp(-rT / 0.25));
+    const margin = rO - cfg.dSafe;
+    const gate = 1 / Math.pow(Math.max(margin / (cfg.wOs || 0.3), 0.15), 2);
+    const wO = (cfg.wOb || 30) * gate;
+    let best = null, bestC = Infinity;
+    for (let i = 0; i <= 10; i++) {
+      const s = i / 10;
+      const [pT, pO] = powers(s, cfg.Ptot);
+      for (let j = 0; j <= 5; j++) {
+        const rho = j / 5;
+        const [ipT, ivT] = info(rT, pT, rho);
+        const [ipO, ivO] = info(rO, pO, rho);
+        const A = postCov(PTp, ipT, ivT), B = postCov(POp, ipO, ivO);
+        let c;
+        if (cfg.policy === 'trace') {
+          c = A.a + A.c + B.a + B.c;
+        } else { // task oriented: Tr(M P) + chance-constraint penalty
+          c = wT * (A.a + 0.25 * A.c) + wO * (B.a + 0.25 * B.c);
+          const viol = Math.max(0, z * Math.sqrt(B.a) - margin);
+          c += 400 * viol * viol;
+        }
+        if (c < bestC) { bestC = c; best = { s, rho }; }
+      }
+    }
+    return best;
+  }
+
+  function control(ep) {
+    const cfg = ep.cfg, q = ep.q, vmax = 0.4;
+    const z = zq(cfg.eps);
+    const sigO = Math.sqrt(ep.PO.a);
+    let dx = ep.eT.x - q.x, dy = ep.eT.y - q.y;
+    const dist = Math.hypot(dx, dy) || 1e-6;
+    const sp = Math.min(vmax, 1.8 * dist);
+    let vx = dx / dist * sp, vy = dy / dist * sp;
+    // obstacle: current and 0.5 s predicted positions, margin inflated by uncertainty
+    const eff = cfg.dSafe + z * sigO;
+    const cands = [[ep.eO.x, ep.eO.y], [ep.eO.x + 0.5 * ep.eO.vx, ep.eO.y + 0.5 * ep.eO.vy]];
+    let worst = null, wr = 9;
+    for (const [ox, oy] of cands) {
+      const rr = Math.hypot(q.x - ox, q.y - oy);
+      if (rr < wr) { wr = rr; worst = [ox, oy]; }
+    }
+    const reach = eff + 0.22;
+    if (wr < reach) {
+      const nx = (q.x - worst[0]) / (wr || 1e-6), ny = (q.y - worst[1]) / (wr || 1e-6);
+      const k = Math.pow(Math.min(1, (reach - wr) / 0.22), 1.3);
+      const tx = -ny, ty = nx;
+      const side = Math.sign(tx * dx + ty * dy) || 1;
+      vx += nx * vmax * 1.5 * k + tx * side * vmax * 1.2 * k;
+      vy += ny * vmax * 1.5 * k + ty * side * vmax * 1.2 * k;
+    }
+    const m = Math.hypot(vx, vy);
+    if (m > vmax) { vx *= vmax / m; vy *= vmax / m; }
+    return { vx, vy };
+  }
+
+  function step(ep) {
+    if (ep.done) return ep;
+    const cfg = ep.cfg, r = ep.r;
+    // 1. predict estimates and covariances
+    for (const e of [ep.eT, ep.eO]) { e.x += e.vx * DT; e.y += e.vy * DT; }
+    const PTp = predictCov(ep.PT, 0.8), POp = predictCov(ep.PO, 1.0);
+    // 2. beamforming decision
+    const beam = chooseBeam(ep, PTp, POp);
+    ep.beam = beam;
+    // 3. measure with the true ranges, then update
+    const [pT, pO] = powers(beam.s, cfg.Ptot);
+    const rTt = Math.hypot(ep.T.x - ep.q.x, ep.T.y - ep.q.y);
+    const rOt = Math.hypot(ep.O.x - ep.q.x, ep.O.y - ep.q.y);
+    const [ipT, ivT] = info(rTt, pT, beam.rho);
+    const [ipO, ivO] = info(rOt, pO, beam.rho);
+    const upd = (e, Pp, truth, ip, iv) => {
+      const Pn = postCov(Pp, ip, iv);
+      for (const ax of ['x', 'y']) {
+        const vk = ax === 'x' ? 'vx' : 'vy';
+        const yp = truth[ax] + gauss(r) / Math.sqrt(ip);
+        const yv = truth[vk] + gauss(r) / Math.sqrt(iv);
+        const a = ip * (yp - e[ax]), b = iv * (yv - e[vk]);
+        e[ax] += Pn.a * a + Pn.b * b;
+        e[vk] += Pn.b * a + Pn.c * b;
+      }
+      return Pn;
+    };
+    ep.PT = upd(ep.eT, PTp, ep.T, ipT, ivT);
+    ep.PO = upd(ep.eO, POp, ep.O, ipO, ivO);
+    // 4. control from estimates
+    const u = control(ep);
+    const lim = 2.2 * DT;
+    ep.v.x += Math.max(-lim, Math.min(lim, u.vx - ep.v.x));
+    ep.v.y += Math.max(-lim, Math.min(lim, u.vy - ep.v.y));
+    ep.q.x = Math.max(0.02, Math.min(W - 0.02, ep.q.x + ep.v.x * DT));
+    ep.q.y = Math.max(0.02, Math.min(H - 0.02, ep.q.y + ep.v.y * DT));
+    // 5. advance the true world
+    ep.t += DT; ep.steps++;
+    ep.T.x += ep.T.vx * DT; ep.T.y += ep.T.vy * DT;
+    if (ep.T.x < 1.2 || ep.T.x > 1.85) ep.T.vx *= -1;
+    if (ep.T.y < 0.25 || ep.T.y > 1.0) ep.T.vy *= -1;
+    obstacleAt(ep, ep.t);
+    // 6. outcome
+    const dT = Math.hypot(ep.T.x - ep.q.x, ep.T.y - ep.q.y);
+    const dO = Math.hypot(ep.O.x - ep.q.x, ep.O.y - ep.q.y);
+    ep.minDist = Math.min(ep.minDist, dO);
+    ep.sumSigO += Math.sqrt(ep.PO.a); ep.sumSigT += Math.sqrt(ep.PT.a); ep.n++;
+    ep.hist.push({
+      t: ep.t, s: beam.s, rho: beam.rho, sigT: Math.sqrt(ep.PT.a), sigO: Math.sqrt(ep.PO.a),
+      clear: dO - cfg.dSafe, dT, dO
+    });
+    if (ep.hist.length > 600) ep.hist.shift();
+    if (dO < cfg.dCol) ep.done = 'collision';
+    else if (dT < 0.04) ep.done = 'grasp';
+    else if (ep.t >= cfg.maxT) ep.done = 'timeout';
+    return ep;
+  }
+
+  function runBatch(cfg, n, seed0) {
+    const res = { grasp: 0, collision: 0, timeout: 0, timeSum: 0, minD: 0, sigO: 0, n };
+    for (let i = 0; i < n; i++) {
+      const ep = makeEpisode(cfg, seed0 + i * 7919);
+      while (!ep.done) step(ep);
+      res[ep.done]++;
+      if (ep.done === 'grasp') res.timeSum += ep.t;
+      res.minD += ep.minDist; res.sigO += ep.sumSigO / ep.n;
+    }
+    res.meanTime = res.grasp ? res.timeSum / res.grasp : NaN;
+    res.meanMinDist = res.minD / n; res.meanSigO = res.sigO / n;
+    return res;
+  }
+
+  const api = { DT, W, H, DEFAULTS, makeEpisode, step, runBatch, zq, rng };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.Sim = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+(function () {
+  var S = window.Sim, W = S.W, H = S.H, DT = S.DT, FLOOR = 0.04;
+  var cfg = Object.assign({}, S.DEFAULTS);
+  var POL = ['task', 'trace', 'uniform', 'target'];
+  var NAME = { task: 'Task-oriented', trace: 'Min trace', uniform: 'Uniform', target: 'Target only' };
+  var DESC = {
+    task: 'Minimizes Tr(M·P) and penalizes chance-constraint violations. The weights change with grasp distance and obstacle proximity, so power flows between target and obstacle.',
+    trace: 'Minimizes the summed estimation error of all states, with no notion of the task. This is the classic sensing-optimization approach.',
+    uniform: 'Power is split evenly between target and obstacle, and between RF and acoustic, for the whole run.',
+    target: 'Nearly all power goes to the target. The obstacle is observed only through the small leakage floor.'
+  };
+  var reduced = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var playing = !reduced, speed = 1, acc = 0, last = 0, doneAt = 0;
+  var ep, trail = [], otrail = [], epCount = 0, seedBase = (Math.random() * 1e6) | 0;
+  var tally = {};
+  POL.forEach(function (p) { tally[p] = { grasp: 0, collision: 0, timeout: 0 }; });
+
+  function $(id) { return document.getElementById(id); }
+  function newEp() {
+    epCount++;
+    ep = S.makeEpisode(cfg, seedBase + epCount * 7919);
+    ep.tallied = false; trail = []; otrail = []; doneAt = 0;
+  }
+
+  function theme() {
+    var cs = getComputedStyle(document.documentElement);
+    var g = function (n) { return cs.getPropertyValue(n).trim(); };
+    return { bg: g('--surface'), ink: g('--ink'), muted: g('--muted'), line: g('--line'), rf: g('--rf'), ac: g('--ac'),
+      obs: g('--obs'), tgt: g('--tgt'), ok: g('--ok'), grip: g('--grip') };
+  }
+  function fit(canvas) {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    var pw = Math.round(w * dpr), ph = Math.round(h * dpr);
+    if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
+    var c = canvas.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { c: c, w: w, h: h };
+  }
+
+  function sector(c, x, y, ang, half, rad) {
+    c.beginPath(); c.moveTo(x, y); c.arc(x, y, rad, ang - half, ang + half); c.closePath();
+  }
+
+  function drawScene() {
+    var T = theme(), f = fit($('scene')), c = f.c, sc = f.w / W;
+    var X = function (x) { return x * sc; }, Y = function (y) { return (H - y) * sc; };
+    c.clearRect(0, 0, f.w, f.h);
+    c.fillStyle = T.bg; c.fillRect(0, 0, f.w, f.h);
+    // grid
+    c.strokeStyle = T.line; c.lineWidth = 1; c.globalAlpha = 0.7;
+    for (var gx = 0.2; gx < W; gx += 0.2) { c.beginPath(); c.moveTo(X(gx), 0); c.lineTo(X(gx), f.h); c.stroke(); }
+    for (var gy = 0.2; gy < H; gy += 0.2) { c.beginPath(); c.moveTo(0, Y(gy)); c.lineTo(f.w, Y(gy)); c.stroke(); }
+    c.globalAlpha = 1;
+    c.fillStyle = T.muted; c.font = '10px ' + getComputedStyle(document.body).getPropertyValue('--mono');
+    [0.5, 1.0, 1.5].forEach(function (v) { c.fillText(v.toFixed(1) + ' m', X(v) + 3, f.h - 4); });
+
+    var q = ep.q, b = ep.beam, z = S.zq(cfg.eps);
+    var shT = FLOOR + (1 - 2 * FLOOR) * b.s, shO = FLOOR + (1 - 2 * FLOOR) * (1 - b.s);
+    var ents = [{ e: ep.eT, sh: shT }, { e: ep.eO, sh: shO }];
+    // beams
+    ents.forEach(function (it) {
+      var dx = it.e.x - q.x, dy = it.e.y - q.y, d = Math.hypot(dx, dy), ang = Math.atan2(-dy, dx);
+      var aRF = Math.min(1, it.sh * b.rho * 1.6), aAC = Math.min(1, it.sh * (1 - b.rho) * 1.6);
+      c.fillStyle = T.rf; c.globalAlpha = 0.04 + 0.30 * aRF;
+      sector(c, X(q.x), Y(q.y), ang, 0.13, X(d + 0.12)); c.fill();
+      c.globalAlpha = 0.25 + 0.5 * aRF; c.strokeStyle = T.rf; c.lineWidth = 1; c.stroke();
+      c.fillStyle = T.ac; c.globalAlpha = 0.04 + 0.45 * aAC;
+      sector(c, X(q.x), Y(q.y), ang, 0.24, X(0.3)); c.fill();
+      c.globalAlpha = 0.25 + 0.6 * aAC; c.strokeStyle = T.ac; c.stroke();
+      c.globalAlpha = 1;
+    });
+    // trails
+    function drawTrail(tr, col, a) {
+      if (tr.length < 2) return;
+      c.strokeStyle = col; c.globalAlpha = a; c.lineWidth = 1.5; c.beginPath();
+      tr.forEach(function (p, i) { if (i) c.lineTo(X(p.x), Y(p.y)); else c.moveTo(X(p.x), Y(p.y)); });
+      c.stroke(); c.globalAlpha = 1;
+    }
+    drawTrail(otrail, T.obs, 0.35); drawTrail(trail, T.grip, 0.45);
+    // estimates: z-sigma circles, safe ring
+    function est(e, P, col, safe) {
+      var r = Math.max(2, z * Math.sqrt(P.a) * sc);
+      c.setLineDash([5, 4]); c.strokeStyle = col; c.lineWidth = 1.5;
+      c.fillStyle = col; c.globalAlpha = 0.13; c.beginPath(); c.arc(X(e.x), Y(e.y), r, 0, 7); c.fill();
+      c.globalAlpha = 1; c.stroke();
+      if (safe) { c.setLineDash([1.5, 3.5]); c.lineWidth = 1.6; c.beginPath(); c.arc(X(e.x), Y(e.y), cfg.dSafe * sc, 0, 7); c.stroke(); }
+      c.setLineDash([]);
+    }
+    est(ep.eT, ep.PT, T.tgt, false); est(ep.eO, ep.PO, T.obs, true);
+    // true bodies
+    c.fillStyle = T.obs; c.beginPath(); c.arc(X(ep.O.x), Y(ep.O.y), 0.07 * sc, 0, 7); c.fill();
+    c.fillStyle = T.tgt; c.beginPath(); c.arc(X(ep.T.x), Y(ep.T.y), 0.03 * sc, 0, 7); c.fill();
+    c.strokeStyle = T.tgt; c.lineWidth = 1.5; c.beginPath(); c.arc(X(ep.T.x), Y(ep.T.y), 0.05 * sc, 0, 7); c.stroke();
+    c.fillStyle = T.grip; c.beginPath(); c.arc(X(q.x), Y(q.y), 0.03 * sc, 0, 7); c.fill();
+    // labels
+    c.font = '12px ' + getComputedStyle(document.body).getPropertyValue('--font');
+    c.fillStyle = T.ink;
+    c.fillText('Obstacle', X(ep.O.x) + 0.085 * sc, Y(ep.O.y) - 0.07 * sc);
+    c.fillText('Target', X(ep.T.x) + 0.06 * sc, Y(ep.T.y) - 0.05 * sc);
+    c.fillText('Arm', X(q.x) + 0.045 * sc, Y(q.y) + 0.07 * sc);
+    if (ep.done) {
+      var txt = { grasp: 'Grasp succeeded', collision: 'Collision', timeout: 'Timed out' }[ep.done];
+      var col = { grasp: T.ok, collision: T.obs, timeout: T.muted }[ep.done];
+      c.font = '600 15px ' + getComputedStyle(document.body).getPropertyValue('--font');
+      var tw = c.measureText(txt).width;
+      c.fillStyle = T.bg; c.globalAlpha = 0.92; c.fillRect(10, 10, tw + 20, 32); c.globalAlpha = 1;
+      c.strokeStyle = col; c.lineWidth = 1.5; c.strokeRect(10, 10, tw + 20, 32);
+      c.fillStyle = col; c.fillText(txt, 20, 31);
+    }
+  }
+
+  function niceMax(v) {
+    var steps = [10, 20, 25, 50, 100, 200];
+    for (var i = 0; i < steps.length; i++) if (v <= steps[i]) return steps[i];
+    return Math.ceil(v / 100) * 100;
+  }
+  function lineChart(id, series, o) {
+    var T = theme(), f = fit($(id)), c = f.c, w = f.w, h = f.h;
+    var L = 34, R = 8, Tp = 6, B = 16, pw = w - L - R, ph = h - Tp - B;
+    var hist = ep.hist, tmax = Math.max(14, ep.t), t0 = tmax - 14;
+    var ymin = o.min, ymax = o.max;
+    if (o.auto) {
+      var lo = 0, hi = 0;
+      hist.forEach(function (p) { series.forEach(function (s) { var v = s.f(p); if (v > hi) hi = v; if (v < lo) lo = v; }); });
+      ymax = niceMax(Math.max(hi * 1.1, o.floorMax || 10));
+      ymin = lo < 0 ? -niceMax(-lo * 1.1) : 0;
+    }
+    var X = function (t) { return L + (t - t0) / 14 * pw; };
+    var Y = function (v) { return Tp + (1 - (v - ymin) / (ymax - ymin)) * ph; };
+    c.clearRect(0, 0, w, h);
+    c.font = '10px ' + getComputedStyle(document.body).getPropertyValue('--mono');
+    c.textAlign = 'right'; c.textBaseline = 'middle';
+    for (var i = 0; i <= 4; i++) {
+      var v = ymin + (ymax - ymin) * i / 4, y = Y(v);
+      c.strokeStyle = T.line; c.lineWidth = 1; c.beginPath(); c.moveTo(L, y); c.lineTo(w - R, y); c.stroke();
+      c.fillStyle = T.muted; c.fillText(o.fmt ? o.fmt(v) : String(Math.round(v * 100) / 100), L - 5, y);
+    }
+    c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+    for (var k = 0; k <= 14; k += 7) { c.fillStyle = T.muted; c.fillText((t0 + k).toFixed(0) + 's', X(t0 + k), h - 3); }
+    if (ymin < 0) {
+      c.fillStyle = T.obs; c.globalAlpha = 0.08; c.fillRect(L, Y(0), pw, Y(ymin) - Y(0)); c.globalAlpha = 1;
+      c.strokeStyle = T.muted; c.beginPath(); c.moveTo(L, Y(0)); c.lineTo(w - R, Y(0)); c.stroke();
+    }
+    series.forEach(function (s) {
+      c.strokeStyle = T[s.col]; c.lineWidth = 1.75; c.lineJoin = 'round'; c.beginPath();
+      var started = false, lx = 0, ly = 0;
+      hist.forEach(function (p) {
+        if (p.t < t0) return;
+        var x = X(p.t), y = Y(s.f(p));
+        if (started) c.lineTo(x, y); else { c.moveTo(x, y); started = true; }
+        lx = x; ly = y;
+      });
+      c.stroke();
+      if (started) { c.fillStyle = T[s.col]; c.beginPath(); c.arc(lx, ly, 2.6, 0, 7); c.fill(); }
+    });
+  }
+
+  function drawCharts() {
+    lineChart('c1', [
+      { col: 'tgt', f: function (p) { return p.s; } },
+      { col: 'rf', f: function (p) { return p.rho; } }
+    ], { min: 0, max: 1, fmt: function (v) { return v.toFixed(1); } });
+    lineChart('c2', [
+      { col: 'tgt', f: function (p) { return p.sigT * 100; } },
+      { col: 'obs', f: function (p) { return p.sigO * 100; } }
+    ], { auto: true, floorMax: 10, fmt: function (v) { return Math.round(v); } });
+    var z = S.zq(cfg.eps);
+    lineChart('c3', [
+      { col: 'ink', f: function (p) { return p.clear * 100; } },
+      { col: 'obs', f: function (p) { return z * p.sigO * 100; } }
+    ], { auto: true, floorMax: 50, fmt: function (v) { return Math.round(v); } });
+  }
+
+  var STAT = { grasp: 'Grasp succeeded', collision: 'Collision', timeout: 'Timed out' };
+  function readout() {
+    var h = ep.hist[ep.hist.length - 1];
+    var st = $('rS');
+    st.textContent = ep.done ? STAT[ep.done] : 'Running';
+    st.className = ep.done ? 'st-' + ep.done : '';
+    $('rT').textContent = ep.t.toFixed(1) + ' s';
+    if (h) {
+      $('rs').textContent = h.s.toFixed(1);
+      $('rr').textContent = h.rho.toFixed(1);
+      $('rsT').textContent = (h.sigT * 100).toFixed(1) + ' cm';
+      $('rsO').textContent = (h.sigO * 100).toFixed(1) + ' cm';
+      $('rdO').textContent = (h.dO * 100).toFixed(0) + ' cm';
+      $('rdT').textContent = (h.dT * 100).toFixed(0) + ' cm';
+    }
+    var t = tally[cfg.policy];
+    $('tally').textContent = 'This session, ' + NAME[cfg.policy] + ': grasped ' + t.grasp + ' · collisions ' + t.collision + ' · timeouts ' + t.timeout;
+  }
+
+  function stepOnce() {
+    S.step(ep);
+    trail.push({ x: ep.q.x, y: ep.q.y }); otrail.push({ x: ep.O.x, y: ep.O.y });
+    if (trail.length > 140) trail.shift();
+    if (otrail.length > 140) otrail.shift();
+    if (ep.done && !ep.tallied) { ep.tallied = true; tally[cfg.policy][ep.done]++; }
+  }
+
+  function frame(ts) {
+    if (!last) last = ts;
+    var dt = Math.min(0.1, (ts - last) / 1000); last = ts;
+    if (playing) {
+      if (ep.done) {
+        if (!doneAt) doneAt = ts; else if (ts - doneAt > 1600) newEp();
+      } else {
+        acc += dt * speed; var n = 0;
+        while (acc >= DT && n < 24 && !ep.done) { stepOnce(); acc -= DT; n++; }
+      }
+    }
+    drawScene(); drawCharts(); readout();
+    requestAnimationFrame(frame);
+  }
+
+  // controls
+  function setPolicy(p) {
+    cfg.policy = p;
+    document.querySelectorAll('#policy button').forEach(function (b) { b.setAttribute('aria-pressed', b.dataset.p === p ? 'true' : 'false'); });
+    $('pdesc').textContent = DESC[p];
+  }
+  document.querySelectorAll('#policy button').forEach(function (b) {
+    b.addEventListener('click', function () { setPolicy(b.dataset.p); newEp(); });
+  });
+  function bind(id, out, fmt, apply, restart) {
+    var el = $(id);
+    function upd() { $(out).textContent = fmt(parseFloat(el.value)); }
+    el.addEventListener('input', function () { apply(parseFloat(el.value)); upd(); if (restart) newEp(); });
+    upd();
+  }
+  bind('sP', 'oP', function (v) { return v.toFixed(2); }, function (v) { cfg.Ptot = v; }, false);
+  bind('sV', 'oV', function (v) { return v.toFixed(2) + '×'; }, function (v) { cfg.obsSpeed = v; }, true);
+  bind('sE', 'oE', function (v) { return v.toFixed(2) + ' (z=' + S.zq(v).toFixed(2) + ')'; }, function (v) { cfg.eps = v; }, false);
+  bind('sD', 'oD', function (v) { return v.toFixed(0) + ' cm'; }, function (v) { cfg.dSafe = v / 100; }, false);
+  $('bPlay').addEventListener('click', function () { playing = !playing; $('bPlay').textContent = playing ? 'Pause' : 'Resume'; });
+  $('bStep').addEventListener('click', function () {
+    playing = false; $('bPlay').textContent = 'Resume';
+    if (ep.done) newEp(); else stepOnce();
+  });
+  $('bNew').addEventListener('click', function () { newEp(); });
+  $('bSpeed').addEventListener('click', function () {
+    speed = speed === 1 ? 3 : speed === 3 ? 8 : 1; $('bSpeed').textContent = 'Speed ' + speed + '×';
+  });
+
+  // batch comparison on a fixed seed set shared by every policy
+  function wilson(k, n) {
+    var p = k / n, z = 1.96, d = 1 + z * z / n;
+    var m = (p + z * z / (2 * n)) / d, s = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d;
+    return [Math.max(0, m - s), Math.min(1, m + s)];
+  }
+  function tick() { return new Promise(function (r) { setTimeout(r, 0); }); }
+  $('bBatch').addEventListener('click', async function () {
+    var btn = $('bBatch'), n = parseInt($('nBatch').value, 10), res = {};
+    btn.disabled = true; $('verdict').textContent = '';
+    for (var i = 0; i < POL.length; i++) {
+      $('bProg').textContent = 'Running ' + NAME[POL[i]] + ' (' + (i + 1) + '/4)';
+      await tick();
+      var cc = Object.assign({}, cfg, { policy: POL[i] });
+      res[POL[i]] = S.runBatch(cc, n, 31337);
+    }
+    $('bProg').textContent = 'Done, ' + n + ' runs per policy';
+    var body = $('bBody'); body.innerHTML = '';
+    var maxHi = 0.05;
+    POL.forEach(function (p) { maxHi = Math.max(maxHi, wilson(res[p].collision, n)[1]); });
+    POL.forEach(function (p) {
+      var r = res[p], ci = wilson(r.collision, n), pc = r.collision / n;
+      var tr = document.createElement('tr');
+      var cells = [
+        NAME[p], r.grasp + ' / ' + n,
+        null,
+        isNaN(r.meanTime) ? '—' : r.meanTime.toFixed(1) + ' s',
+        (r.meanSigO * 100).toFixed(1) + ' cm'
+      ];
+      cells.forEach(function (v, idx) {
+        var td = document.createElement('td');
+        if (idx > 0) td.className = 'num';
+        if (idx === 2) {
+          td.innerHTML = '<div class="bar"><i style="width:' + Math.max(2, pc / maxHi * 90) + 'px"></i><span>' +
+            (pc * 100).toFixed(1) + '% (' + (ci[0] * 100).toFixed(1) + '–' + (ci[1] * 100).toFixed(1) + ')</span></div>';
+        } else td.textContent = v;
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+    // task vs uniform, two-proportion z test
+    var a = res.task.collision / n, b = res.uniform.collision / n;
+    var se = Math.sqrt(a * (1 - a) / n + b * (1 - b) / n);
+    var zz = se > 0 ? (b - a) / se : 0;
+    var txt = 'Task-oriented collision rate is ' + (a * 100).toFixed(1) + '% versus ' + (b * 100).toFixed(1) + '% for uniform, a difference of ' + ((b - a) * 100).toFixed(1) + ' percentage points. ';
+    if (Math.abs(zz) >= 1.96) txt += zz > 0 ? 'This gap is larger than the statistical noise.' : 'Uniform is actually better here, and the gap is larger than the statistical noise.';
+    else txt += 'This gap is within statistical noise, so it does not show which policy is better. Try more runs.';
+    txt += ' Target only collides in ' + (res.target.collision / n * 100).toFixed(1) + '% of runs, which shows the cost of leaving the obstacle unobserved.';
+    $('verdict').textContent = txt;
+    btn.disabled = false;
+  });
+
+  setPolicy('task'); newEp();
+  if (reduced) $('bPlay').textContent = 'Resume';
+  requestAnimationFrame(frame);
+})();
+</script>
+
+</body></html>

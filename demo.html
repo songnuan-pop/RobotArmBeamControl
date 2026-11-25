@@ -71,6 +71,7 @@
     background: transparent; color: var(--ink); cursor: pointer; min-height: 38px;
   }
   .seg button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 500; }
+  .seg button:last-child:nth-child(odd) { grid-column: 1 / -1; }
   button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .desc { color: var(--muted); font-size: 12.5px; margin-top: 10px; min-height: 4.6em; }
   .field { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; margin-top: 14px; }
@@ -174,6 +175,7 @@
           <button type="button" data-p="trace" aria-pressed="false">Min trace</button>
           <button type="button" data-p="uniform" aria-pressed="false">Uniform</button>
           <button type="button" data-p="target" aria-pressed="false">Target only</button>
+          <button type="button" data-p="wf" aria-pressed="false">Water-filling</button>
         </div>
         <p class="desc" id="pdesc"></p>
 
@@ -249,6 +251,7 @@
           <h3>Task-oriented cost</h3>
           <span class="f">c(s,ρ) = Σ_e w_e·(P_pos + ¼P_vel) + 400·max(0, zσ_O − (d̂_O − d_safe))²</span>
           <p>w_e varies with the arm-to-target distance and with how close the obstacle is to the safety boundary. The last term is the penalty form of the chance constraint, and z is set by ε.</p>
+          <p style="margin-top:6px">The Water-filling policy minimizes this same cost over four continuous powers. When the modes are decoupled it reduces to the closed form π<sub>i</sub> = (√(m<sub>i</sub>/(g<sub>i</sub>λ)) − a<sub>i</sub>/g<sub>i</sub>)<sup>+</sup>, where λ is set by the power budget.</p>
           <h3 style="margin-top:12px">Simplifications versus the original derivation</h3>
           <ul>
             <li>Two scalars (s, ρ) replace the complex beam weights, so there is no constant-modulus constraint.</li>
@@ -318,6 +321,90 @@
     return [Ptot * (FLOOR + (1 - 2 * FLOOR) * s), Ptot * (FLOOR + (1 - 2 * FLOOR) * (1 - s))];
   }
 
+  // Information gained per unit power: rf = [position, velocity], ac = [position, velocity].
+  function gains(range) {
+    const near = Math.exp(-Math.pow(range / 0.3, 2));
+    return {
+      rf: [1 / (0.12 * 0.12 * (1 + Math.pow(range / 1.0, 2))), 1 / (0.2 * 0.2)],
+      ac: [near / (0.012 * 0.012), near / (0.25 * 0.25)]
+    };
+  }
+
+  // Exact solution of  min sum m_i/(a_i + g_i p_i)  s.t. sum p_i = P, p_i >= 0  (decoupled modes).
+  // p_i = (sqrt(m_i/(g_i*lambda)) - a_i/g_i)^+ ; lambda found by bisection.
+  function waterfill(m, g, a, P) {
+    const n = m.length;
+    const pis = (lam) => m.map((mi, i) => Math.max(0, Math.sqrt(mi / (g[i] * lam)) - a[i] / g[i]));
+    const tot = (lam) => pis(lam).reduce((s, v) => s + v, 0);
+    let hi = 0;
+    for (let i = 0; i < n; i++) hi = Math.max(hi, m[i] * g[i] / (a[i] * a[i]));
+    if (hi === 0) return { pi: new Array(n).fill(0), lambda: 0, cost: m.reduce((s, mi, i) => s + mi / a[i], 0) };
+    let lo = hi * 1e-12;
+    for (let it = 0; it < 200; it++) {
+      const mid = Math.sqrt(lo * hi);
+      if (tot(mid) > P) lo = mid; else hi = mid;
+    }
+    const lam = Math.sqrt(lo * hi), p = pis(lam);
+    let cost = 0;
+    for (let i = 0; i < n; i++) cost += m[i] / (a[i] + g[i] * p[i]);
+    return { pi: p, lambda: lam, cost };
+  }
+
+  // Generic solver on {x >= 0, sum x = B}: exponentiated-gradient descent with backtracking.
+  // fg(x) must return { f, g } (value and gradient).
+  function mirrorDescent(fg, n, B, iters) {
+    let x = new Array(n).fill(B / n), cur = fg(x), eta = 1;
+    for (let it = 0; it < (iters || 80); it++) {
+      let gmax = 0;
+      for (const v of cur.g) gmax = Math.max(gmax, Math.abs(v));
+      if (!(gmax > 0)) break;
+      let moved = false;
+      for (let tr = 0; tr < 10; tr++) {
+        let y = x.map((xi, k) => Math.max(xi, 1e-300) * Math.exp(-eta * cur.g[k] / gmax));
+        let s = 0; for (const v of y) s += v;
+        y = y.map((v) => v * B / s);
+        const c = fg(y);
+        if (c.f < cur.f) { x = y; cur = c; eta *= 1.4; moved = true; break; }
+        eta *= 0.5;
+      }
+      if (!moved) break;
+    }
+    return { x, f: cur.f };
+  }
+
+  // Task cost of a continuous allocation x = [target RF, target AC, obstacle RF, obstacle AC].
+  // Every entity also receives a fixed RF leakage floor. Returns value and analytic gradient.
+  function evalAlloc(c, x) {
+    const fl = c.Ptot * FLOOR, gT = gains(c.rT), gO = gains(c.rO);
+    const ipT = (x[0] + fl) * gT.rf[0] + x[1] * gT.ac[0], ivT = (x[0] + fl) * gT.rf[1] + x[1] * gT.ac[1];
+    const ipO = (x[2] + fl) * gO.rf[0] + x[3] * gO.ac[0], ivO = (x[2] + fl) * gO.rf[1] + x[3] * gO.ac[1];
+    const A = postCov(c.PTp, ipT, ivT), B = postCov(c.POp, ipO, ivO);
+    let f = c.wT * (A.a + 0.25 * A.c) + c.wO * (B.a + 0.25 * B.c);
+    const sig = Math.sqrt(B.a), viol = Math.max(0, c.z * sig - c.margin);
+    f += 400 * viol * viol;
+    // dP/dx_k = -P diag(gp, gv) P
+    const dP = (P, gp, gv) => ({ a: -(P.a * P.a * gp + P.b * P.b * gv), c: -(P.b * P.b * gp + P.c * P.c * gv) });
+    const gr = [0, 0, 0, 0];
+    const dT = [dP(A, gT.rf[0], gT.rf[1]), dP(A, gT.ac[0], gT.ac[1])];
+    const dO = [dP(B, gO.rf[0], gO.rf[1]), dP(B, gO.ac[0], gO.ac[1])];
+    for (let k = 0; k < 2; k++) {
+      gr[k] = c.wT * (dT[k].a + 0.25 * dT[k].c);
+      gr[2 + k] = c.wO * (dO[k].a + 0.25 * dO[k].c) + (viol > 0 ? 800 * viol * c.z * dO[k].a / (2 * sig) : 0);
+    }
+    return { f, g: gr };
+  }
+
+  // Continuous task-weighted allocation used by the 'wf' policy.
+  function wfBeam(c) {
+    const B = c.Ptot * (1 - 2 * FLOOR), fl = c.Ptot * FLOOR;
+    const x = mirrorDescent((v) => evalAlloc(c, v), 4, B, 80).x;
+    const tT = x[0] + x[1] + fl, tO = x[2] + x[3] + fl;
+    return {
+      s: (x[0] + x[1]) / B, rho: (x[0] + x[2] + 2 * fl) / (tT + tO),
+      rhoT: (x[0] + fl) / tT, rhoO: (x[2] + fl) / tO, pi: x
+    };
+  }
+
   const DEFAULTS = {
     policy: 'task', Ptot: 0.3, eps: 0.05, obsSpeed: 1.25, wOb: 100, wOs: 0.6, dSafe: 0.22, dCol: 0.10, maxT: 25
   };
@@ -367,6 +454,7 @@
     const margin = rO - cfg.dSafe;
     const gate = 1 / Math.pow(Math.max(margin / (cfg.wOs || 0.3), 0.15), 2);
     const wO = (cfg.wOb || 30) * gate;
+    if (cfg.policy === 'wf') return wfBeam({ PTp, POp, rT, rO, wT, wO, margin, z, Ptot: cfg.Ptot });
     let best = null, bestC = Infinity;
     for (let i = 0; i <= 10; i++) {
       const s = i / 10;
@@ -430,11 +518,18 @@
     const beam = chooseBeam(ep, PTp, POp);
     ep.beam = beam;
     // 3. measure with the true ranges, then update
-    const [pT, pO] = powers(beam.s, cfg.Ptot);
     const rTt = Math.hypot(ep.T.x - ep.q.x, ep.T.y - ep.q.y);
     const rOt = Math.hypot(ep.O.x - ep.q.x, ep.O.y - ep.q.y);
-    const [ipT, ivT] = info(rTt, pT, beam.rho);
-    const [ipO, ivO] = info(rOt, pO, beam.rho);
+    let ipT, ivT, ipO, ivO;
+    if (beam.pi) { // continuous allocation: per-entity, per-modality powers
+      const fl = cfg.Ptot * FLOOR, gT = gains(rTt), gO = gains(rOt), x = beam.pi;
+      ipT = (x[0] + fl) * gT.rf[0] + x[1] * gT.ac[0]; ivT = (x[0] + fl) * gT.rf[1] + x[1] * gT.ac[1];
+      ipO = (x[2] + fl) * gO.rf[0] + x[3] * gO.ac[0]; ivO = (x[2] + fl) * gO.rf[1] + x[3] * gO.ac[1];
+    } else {
+      const [pT, pO] = powers(beam.s, cfg.Ptot);
+      [ipT, ivT] = info(rTt, pT, beam.rho);
+      [ipO, ivO] = info(rOt, pO, beam.rho);
+    }
     const upd = (e, Pp, truth, ip, iv) => {
       const Pn = postCov(Pp, ip, iv);
       for (const ax of ['x', 'y']) {
@@ -492,7 +587,10 @@
     return res;
   }
 
-  const api = { DT, W, H, DEFAULTS, makeEpisode, step, runBatch, zq, rng };
+  const api = {
+    DT, W, H, FLOOR, DEFAULTS, makeEpisode, step, runBatch, zq, rng,
+    gains, info, waterfill, mirrorDescent, evalAlloc, wfBeam, postCov, predictCov
+  };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.Sim = api;
 })(typeof window !== 'undefined' ? window : globalThis);
 
@@ -501,13 +599,14 @@
 (function () {
   var S = window.Sim, W = S.W, H = S.H, DT = S.DT, FLOOR = 0.04;
   var cfg = Object.assign({}, S.DEFAULTS);
-  var POL = ['task', 'trace', 'uniform', 'target'];
-  var NAME = { task: 'Task-oriented', trace: 'Min trace', uniform: 'Uniform', target: 'Target only' };
+  var POL = ['task', 'wf', 'trace', 'uniform', 'target'];
+  var NAME = { task: 'Task-oriented', trace: 'Min trace', uniform: 'Uniform', target: 'Target only', wf: 'Water-filling' };
   var DESC = {
     task: 'Minimizes Tr(M·P) and penalizes chance-constraint violations. The weights change with grasp distance and obstacle proximity, so power flows between target and obstacle.',
     trace: 'Minimizes the summed estimation error of all states, with no notion of the task. This is the classic sensing-optimization approach.',
     uniform: 'Power is split evenly between target and obstacle, and between RF and acoustic, for the whole run.',
-    target: 'Nearly all power goes to the target. The obstacle is observed only through the small leakage floor.'
+    target: 'Nearly all power goes to the target. The obstacle is observed only through the small leakage floor.',
+    wf: 'Minimizes the same task cost as Task-oriented, but over four continuous powers (target and obstacle, each RF and acoustic) instead of an 11×6 grid. With decoupled modes this is the closed-form water-filling solution.'
   };
   var reduced = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
   var playing = !reduced, speed = 1, acc = 0, last = 0, doneAt = 0;
@@ -556,11 +655,12 @@
 
     var q = ep.q, b = ep.beam, z = S.zq(cfg.eps);
     var shT = FLOOR + (1 - 2 * FLOOR) * b.s, shO = FLOOR + (1 - 2 * FLOOR) * (1 - b.s);
-    var ents = [{ e: ep.eT, sh: shT }, { e: ep.eO, sh: shO }];
+    var ents = [{ e: ep.eT, sh: shT, rho: b.rhoT }, { e: ep.eO, sh: shO, rho: b.rhoO }];
     // beams
     ents.forEach(function (it) {
       var dx = it.e.x - q.x, dy = it.e.y - q.y, d = Math.hypot(dx, dy), ang = Math.atan2(-dy, dx);
-      var aRF = Math.min(1, it.sh * b.rho * 1.6), aAC = Math.min(1, it.sh * (1 - b.rho) * 1.6);
+      var rr = it.rho !== undefined ? it.rho : b.rho;
+      var aRF = Math.min(1, it.sh * rr * 1.6), aAC = Math.min(1, it.sh * (1 - rr) * 1.6);
       c.fillStyle = T.rf; c.globalAlpha = 0.04 + 0.30 * aRF;
       sector(c, X(q.x), Y(q.y), ang, 0.13, X(d + 0.12)); c.fill();
       c.globalAlpha = 0.25 + 0.5 * aRF; c.strokeStyle = T.rf; c.lineWidth = 1; c.stroke();
@@ -753,7 +853,7 @@
     var btn = $('bBatch'), n = parseInt($('nBatch').value, 10), res = {};
     btn.disabled = true; $('verdict').textContent = '';
     for (var i = 0; i < POL.length; i++) {
-      $('bProg').textContent = 'Running ' + NAME[POL[i]] + ' (' + (i + 1) + '/4)';
+      $('bProg').textContent = 'Running ' + NAME[POL[i]] + ' (' + (i + 1) + '/' + POL.length + ')';
       await tick();
       var cc = Object.assign({}, cfg, { policy: POL[i] });
       res[POL[i]] = S.runBatch(cc, n, 31337);
